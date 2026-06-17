@@ -23,11 +23,17 @@ class TaxCalculationServiceTest {
 
     private SimulationRequest request(int income, boolean isSpecific,
                                       boolean isSubjectToSI, boolean parentIsEmployee) {
+        return request(income, isSpecific, isSubjectToSI, parentIsEmployee, false);
+    }
+
+    private SimulationRequest request(int income, boolean isSpecific, boolean isSubjectToSI,
+                                      boolean parentIsEmployee, boolean isStudent) {
         SimulationRequest req = new SimulationRequest();
         req.setAnnualIncome(income);
         req.setIsSpecificDependent(isSpecific);
         req.setIsSubjectToSocialInsurance(isSubjectToSI);
         req.setParentIsEmployee(parentIsEmployee);
+        req.setIsStudent(isStudent);
         return req;
     }
 
@@ -193,6 +199,56 @@ class TaxCalculationServiceTest {
             SimulationResult result = service.simulate(request(1_060_000, true, true, true));
             assertThat(result.getSocialInsurancePremium()).isEqualTo(149_990);
             assertThat(findWall(result, "106万円").isExceeded()).isTrue();
+        }
+    }
+
+    @Nested
+    @DisplayName("住民税（均等割・所得割・勤労学生控除）")
+    class ResidentTaxCalculation {
+
+        @Test
+        @DisplayName("年収110万円以下なら住民税は0円（非課税限度額）")
+        void under110_noResidentTax() {
+            SimulationResult result = service.simulate(request(1_050_000, true, false, false, true));
+            assertThat(result.getResidentTax()).isZero();
+        }
+
+        @Test
+        @DisplayName("学生以外は110万円超で均等割＋所得割が発生する")
+        void nonStudent_over110() {
+            // 合計所得 = 1,200,000 - 650,000 = 550,000
+            // 所得割 = (550,000 - 430,000) × 10% = 12,000 ＋ 均等割 5,000 = 17,000
+            SimulationResult result = service.simulate(request(1_200_000, false, false, false, false));
+            assertThat(result.getResidentTax()).isEqualTo(17_000);
+        }
+
+        @Test
+        @DisplayName("学生は110〜134万円では均等割のみ（勤労学生控除で所得割は非課税）")
+        void student_between110And134_onlyPerCapita() {
+            // 勤労学生控除26万で課税所得0 → 所得割0、均等割5,000のみ
+            SimulationResult result = service.simulate(request(1_200_000, true, false, false, true));
+            assertThat(result.getResidentTax()).isEqualTo(5_000);
+        }
+
+        @Test
+        @DisplayName("学生の134万円の壁：134万ちょうどは所得割0、134万超で所得割が発生する")
+        void student_wall134() {
+            SimulationResult at134 = service.simulate(request(1_340_000, true, false, false, true));
+            assertThat(at134.getResidentTax()).isEqualTo(5_000); // 均等割のみ
+
+            // 1,350,000: 合計所得700,000、課税所得 = 700,000-430,000-260,000 = 10,000 → 所得割1,000
+            SimulationResult over134 = service.simulate(request(1_350_000, true, false, false, true));
+            assertThat(over134.getResidentTax()).isEqualTo(6_000); // 均等割5,000＋所得割1,000
+            assertThat(findWall(over134, "134万円").isExceeded()).isTrue();
+        }
+
+        @Test
+        @DisplayName("学生でなければ134万円の壁（住民税・所得割）は表示されない")
+        void nonStudent_noStudentWall() {
+            SimulationResult result = service.simulate(request(1_350_000, false, false, false, false));
+            boolean hasStudentWall = result.getWallStatuses().stream()
+                    .anyMatch(w -> w.getName().contains("134万円"));
+            assertThat(hasStudentWall).isFalse();
         }
     }
 

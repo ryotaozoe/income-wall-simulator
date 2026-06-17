@@ -19,6 +19,7 @@ public class SimulationHistory {
     private boolean isSpecificDependent;
     private boolean isSubjectToSocialInsurance;
     private boolean parentIsEmployee;
+    private boolean isStudent;
 
     private int takeHomeIncome;
     private int incomeTax;

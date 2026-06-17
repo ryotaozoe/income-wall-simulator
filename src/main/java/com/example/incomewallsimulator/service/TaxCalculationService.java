@@ -31,7 +31,8 @@ public class TaxCalculationService {
     private static final int EMPLOYMENT_DEDUCTION_FLAT_CEILING = 1_900_000;
 
     // 各種「壁」の閾値
-    private static final int WALL_RESIDENT_TAX = 1_100_000;          // 住民税が発生し始める目安
+    private static final int WALL_RESIDENT_PER_CAPITA = 1_100_000;   // 住民税・均等割の壁（給与収入110万）
+    private static final int WALL_RESIDENT_INCOME_STUDENT = 1_340_000;// 住民税・所得割の壁（学生＝勤労学生控除あり）
     private static final int WALL_INCOME_TAX = 1_600_000;            // 本人の所得税の壁（基礎控除95万＋給与所得控除65万）
     private static final int WALL_SOCIAL_INSURANCE_SMALL = 1_060_000;// 社会保険の壁（106万・条件該当者）
     private static final int WALL_SOCIAL_INSURANCE_LARGE = 1_300_000;// 社会保険の壁（130万・被扶養者の上限）
@@ -50,6 +51,13 @@ public class TaxCalculationService {
     private static final double PENSION_RATE = 0.0915;              // 厚生年金 約9.15%
     private static final int NATIONAL_PENSION_ANNUAL = 203_760;      // 国民年金保険料（2025年・年額）
 
+    // 住民税
+    private static final int RESIDENT_BASIC_DEDUCTION = 430_000;     // 住民税の基礎控除
+    private static final int WORKING_STUDENT_DEDUCTION = 260_000;    // 勤労学生控除（住民税）
+    private static final int RESIDENT_NONTAX_LIMIT = 450_000;        // 非課税限度額（単身・合計所得45万）
+    private static final int WORKING_STUDENT_INCOME_LIMIT = 750_000; // 勤労学生控除の合計所得上限（75万）
+    private static final int PER_CAPITA_LEVY = 5_000;                // 均等割（森林環境税1,000円含む）
+
     // 親の所得税率の想定（一般的な会社員）
     private static final double ASSUMED_PARENT_TAX_RATE = 0.20;
 
@@ -58,6 +66,7 @@ public class TaxCalculationService {
         boolean isSpecific = req.getIsSpecificDependent();
         boolean isSubjectToSI = req.getIsSubjectToSocialInsurance();
         boolean parentIsEmployee = req.getParentIsEmployee();
+        boolean isStudent = req.getIsStudent();
 
         // --- 本人の税・社会保険料 ---
         int socialInsurancePremium = calcSocialInsurancePremium(income, isSubjectToSI, isSpecific);
@@ -66,7 +75,7 @@ public class TaxCalculationService {
         int basicDeduction = calcBasicDeduction(totalIncome);
         int taxableIncome = Math.max(totalIncome - socialInsurancePremium - basicDeduction, 0);
         int incomeTax = calcIncomeTax(taxableIncome);
-        int residentTax = calcResidentTax(taxableIncome, income);
+        int residentTax = calcResidentTax(totalIncome, socialInsurancePremium, isStudent);
         int takeHome = income - socialInsurancePremium - incomeTax - residentTax;
 
         // --- 親の扶養控除（段階的）---
@@ -85,7 +94,7 @@ public class TaxCalculationService {
 
         String dependentStatus = buildDependentStatus(income, isSpecific, parentDeduction, parentMaxDeduction);
 
-        List<WallStatus> walls = buildWallStatuses(income, isSpecific, isSubjectToSI);
+        List<WallStatus> walls = buildWallStatuses(income, isSpecific, isSubjectToSI, isStudent);
         int recommendedMax = calcRecommendedMax(isSpecific, isSubjectToSI, parentIsEmployee);
         String advice = buildAdvice(income, canBeDependent, recommendedMax, isSpecific, isSubjectToSI, parentDeduction, parentMaxDeduction);
 
@@ -166,10 +175,28 @@ public class TaxCalculationService {
         return (int) (taxableIncome * 0.45) - 4_796_000;
     }
 
-    /** 住民税（所得割10% ＋ 均等割。給与収入が非課税限度以下なら0） */
-    private int calcResidentTax(int taxableIncome, int income) {
-        if (income < WALL_RESIDENT_TAX || taxableIncome <= 0) return 0;
-        return (int) (taxableIncome * 0.10) + 5_000;
+    /**
+     * 住民税（均等割＋所得割）。
+     * 均等割：合計所得が非課税限度（45万＝給与収入110万）を超えると約5,000円。
+     * 所得割：課税所得（合計所得−基礎控除43万−勤労学生控除26万−社保料）×10%。
+     * 学生は勤労学生控除により、所得割が給与収入134万円まで非課税になる。
+     *
+     * @param totalIncome 合計所得（給与のみ前提なので給与所得）
+     */
+    private int calcResidentTax(int totalIncome, int socialInsurancePremium, boolean isStudent) {
+        // 非課税限度額（単身・合計所得45万円以下）なら均等割・所得割ともに非課税
+        if (totalIncome <= RESIDENT_NONTAX_LIMIT) return 0;
+
+        // 均等割（定額）
+        int perCapita = PER_CAPITA_LEVY;
+
+        // 所得割（勤労学生控除は合計所得75万円以下の学生のみ適用）
+        int studentDeduction = (isStudent && totalIncome <= WORKING_STUDENT_INCOME_LIMIT)
+                ? WORKING_STUDENT_DEDUCTION : 0;
+        int taxable = Math.max(totalIncome - RESIDENT_BASIC_DEDUCTION - studentDeduction - socialInsurancePremium, 0);
+        int incomeBased = (int) (taxable * 0.10);
+
+        return perCapita + incomeBased;
     }
 
     /**
@@ -195,8 +222,28 @@ public class TaxCalculationService {
         return income <= WALL_GENERAL_DEPENDENT ? GENERAL_DEPENDENT_DEDUCTION : 0;
     }
 
-    private List<WallStatus> buildWallStatuses(int income, boolean isSpecific, boolean isSubjectToSI) {
+    private List<WallStatus> buildWallStatuses(int income, boolean isSpecific, boolean isSubjectToSI, boolean isStudent) {
         List<WallStatus> walls = new ArrayList<>();
+
+        walls.add(WallStatus.builder()
+                .name("110万円の壁（住民税）")
+                .threshold(WALL_RESIDENT_PER_CAPITA)
+                .exceeded(income >= WALL_RESIDENT_PER_CAPITA)
+                .description(isStudent
+                        ? "給与収入110万円を超えると住民税の均等割（約5,000円）が発生します（所得割は勤労学生控除により134万円まで非課税）。"
+                        : "給与収入110万円を超えると住民税（均等割約5,000円＋所得割）が発生します（主要都市の場合）。")
+                .consequence("住民税の均等割 約5,000円が発生します")
+                .build());
+
+        if (isStudent) {
+            walls.add(WallStatus.builder()
+                    .name("134万円の壁（住民税・所得割／学生）")
+                    .threshold(WALL_RESIDENT_INCOME_STUDENT)
+                    .exceeded(income >= WALL_RESIDENT_INCOME_STUDENT)
+                    .description("学生は勤労学生控除（住民税26万円）があるため、所得割は給与収入134万円まで非課税です。")
+                    .consequence("住民税の所得割（課税所得×10%）が発生します")
+                    .build());
+        }
 
         walls.add(WallStatus.builder()
                 .name("160万円の壁（所得税）")

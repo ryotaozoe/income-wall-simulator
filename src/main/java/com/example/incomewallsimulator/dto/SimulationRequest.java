@@ -24,4 +24,8 @@ public class SimulationRequest {
     // 親が会社員（社会保険の被扶養者かどうかに関係）
     @NotNull
     private Boolean parentIsEmployee;
+
+    // 学生かどうか（勤労学生控除の対象）
+    @NotNull
+    private Boolean isStudent;
 }

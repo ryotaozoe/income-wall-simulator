@@ -47,6 +47,7 @@ public class SimulatorController {
         history.setSpecificDependent(request.getIsSpecificDependent());
         history.setSubjectToSocialInsurance(request.getIsSubjectToSocialInsurance());
         history.setParentIsEmployee(request.getParentIsEmployee());
+        history.setStudent(request.getIsStudent());
         history.setTakeHomeIncome(result.getTakeHomeIncome());
         history.setIncomeTax(result.getIncomeTax());
         history.setResidentTax(result.getResidentTax());
