@@ -82,7 +82,7 @@
                     <label><input type="radio" th:field="*{isSpecificDependent}" th:value="${true}" /> 19〜22歳（特定扶養親族）</label>
                     <label><input type="radio" th:field="*{isSpecificDependent}" th:value="${false}" /> それ以外（16〜18歳 / 23歳以上）</label>
                 </div>
-                <div class="help-text">19〜22歳は2025年改正で扶養の上限が150万円に拡大されました</div>
+                <div class="help-text">19〜22歳は2025年改正で「特定親族特別控除」が新設され、188万円まで親が段階的に控除を受けられます</div>
                 <div class="error" th:if="${#fields.hasErrors('isSpecificDependent')}" th:errors="*{isSpecificDependent}"></div>
             </div>
 
@@ -116,8 +116,9 @@
 
         <!-- 扶養判定バナー -->
         <div class="dependent-banner" th:classappend="${result.canBeDependent} ? 'dependent-ok' : 'dependent-ng'">
-            <span th:if="${result.canBeDependent}">✅ 現在の年収は扶養範囲内です</span>
-            <span th:unless="${result.canBeDependent}">⚠️ 扶養から外れています（いずれかの壁を超過）</span>
+            <span th:if="${result.canBeDependent}">✅ </span>
+            <span th:unless="${result.canBeDependent}">⚠️ </span>
+            <span th:text="${result.dependentStatus}"></span>
         </div>
 
         <!-- 手取り等サマリー -->
@@ -158,20 +159,24 @@
             </div>
         </div>
 
-        <!-- 扶養を外れた場合の親への影響 -->
-        <div th:unless="${result.canBeDependent}" style="margin-top: 20px;">
-            <h2>扶養を外れた場合の親への影響</h2>
+        <!-- 親が受けられる控除の状況 -->
+        <div th:if="${result.parentLostDeduction > 0}" style="margin-top: 20px;">
+            <h2>親が受けられる扶養控除への影響</h2>
             <div class="result-summary">
                 <div class="stat-box">
-                    <div class="label">親が失う控除額</div>
-                    <div class="value" style="color:#c62828;" th:text="${#numbers.formatInteger(result.parentLostDeduction, 0, 'COMMA') + ' 円'}"></div>
+                    <div class="label">親の控除額（現在）</div>
+                    <div class="value" th:text="${#numbers.formatInteger(result.parentDeduction, 0, 'COMMA') + ' 円'}"></div>
+                </div>
+                <div class="stat-box">
+                    <div class="label">満額からの減少</div>
+                    <div class="value" style="color:#c62828;" th:text="'-' + ${#numbers.formatInteger(result.parentLostDeduction, 0, 'COMMA') + ' 円'}"></div>
                 </div>
                 <div class="stat-box">
                     <div class="label">親の追加税負担（概算）</div>
                     <div class="value" style="color:#c62828;" th:text="${#numbers.formatInteger(result.parentAdditionalTax, 0, 'COMMA') + ' 円/年'}"></div>
                 </div>
                 <div class="stat-box">
-                    <div class="label">扶養に留まる推奨上限</div>
+                    <div class="label">満額控除の推奨上限</div>
                     <div class="value" style="color:#e65100;" th:text="${#numbers.formatInteger(result.recommendedMaxIncome, 0, 'COMMA') + ' 円'}"></div>
                 </div>
             </div>

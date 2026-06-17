@@ -26,17 +26,26 @@ public class SimulationResult {
     // 各壁のステータス
     private List<WallStatus> wallStatuses;
 
-    // 扶養に入れるか
+    // 親が満額の控除を受けられるか（社会保険の被扶養も維持）
     private boolean canBeDependent;
 
-    // 扶養に留まるための推奨上限年収
+    // 扶養に留まる（親が満額控除を受けられる）ための推奨上限年収
     private int recommendedMaxIncome;
 
-    // 親が失う控除額（扶養を外れた場合）
+    // 親が実際に受けられる控除額（所得税・段階的）
+    private int parentDeduction;
+
+    // 親が受けられる控除の満額（特定63万／一般38万）
+    private int parentMaxDeduction;
+
+    // 親が失う控除額（満額からの減少分）
     private int parentLostDeduction;
 
-    // 親の追加税負担（扶養を外れた場合）
+    // 親の追加税負担（概算）
     private int parentAdditionalTax;
+
+    // 扶養の状態ラベル（満額／段階的減額／なし）
+    private String dependentStatus;
 
     // アドバイスメッセージ
     private String advice;

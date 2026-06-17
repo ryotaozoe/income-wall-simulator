@@ -12,16 +12,15 @@ import org.junit.jupiter.params.provider.CsvSource;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * 税制計算ロジックの単体テスト。
+ * 税制計算ロジックの単体テスト（2025年・令和7年度税制改正対応）。
  *
- * お金に関わる計算のため、各「壁」の境界値（ちょうど / 1円手前）を中心に
- * 正確性を担保する。Spring コンテキストや DB に依存しない純粋な単体テスト。
+ * お金に関わる計算のため、各「壁」の境界値と段階的控除を中心に正確性を担保する。
+ * Spring コンテキストや DB に依存しない純粋な単体テスト。
  */
 class TaxCalculationServiceTest {
 
     private final TaxCalculationService service = new TaxCalculationService();
 
-    /** テスト用の SimulationRequest を組み立てるヘルパー */
     private SimulationRequest request(int income, boolean isSpecific,
                                       boolean isSubjectToSI, boolean parentIsEmployee) {
         SimulationRequest req = new SimulationRequest();
@@ -32,7 +31,6 @@ class TaxCalculationServiceTest {
         return req;
     }
 
-    /** 指定した名前を含む壁のステータスを取り出す */
     private WallStatus findWall(SimulationResult result, String namePart) {
         return result.getWallStatuses().stream()
                 .filter(w -> w.getName().contains(namePart))
@@ -41,90 +39,102 @@ class TaxCalculationServiceTest {
     }
 
     @Nested
-    @DisplayName("123万円の壁（所得税）")
-    class IncomeTaxWall {
+    @DisplayName("基礎控除95万円（2025年改正の時限措置）")
+    class BasicDeduction {
 
         @Test
-        @DisplayName("年収123万円ちょうどでは課税所得0のため所得税は発生しない（基礎控除58万＋給与所得控除65万）")
-        void exactlyAtWall_noTax() {
-            SimulationResult result = service.simulate(request(1_230_000, true, false, false));
+        @DisplayName("年収129万9999円・社会保険なしなら、基礎控除95万円により所得税は0円（旧基礎控除58万では課税されていた帯）")
+        void raisedBasicDeduction_noTax() {
+            // 給与所得 = 1,299,999 - 650,000 = 649,999、基礎控除95万 → 課税所得0
+            SimulationResult result = service.simulate(request(1_299_999, true, false, false));
             assertThat(result.getIncomeTax()).isZero();
         }
 
         @Test
-        @DisplayName("123万円を超えると所得税が発生する")
-        void overWall_taxOccurs() {
-            // 年収124万円: 課税所得 = 1,240,000 - 650,000(給与所得控除) - 580,000(基礎控除) = 10,000
-            //            所得税 = 10,000 × 5% = 500円
-            SimulationResult result = service.simulate(request(1_240_000, true, false, false));
-            assertThat(result.getIncomeTax()).isEqualTo(500);
+        @DisplayName("年収190万・社会保険ありでは課税所得が生じ所得税が発生する")
+        void highIncome_taxOccurs() {
+            // 社保 = 1,900,000 × 14.15% = 268,850
+            // 給与所得 = 1,900,000 - 650,000 = 1,250,000、基礎控除95万
+            // 課税所得 = 1,250,000 - 268,850 - 950,000 = 31,150 → 所得税 31,150 × 5% = 1,557
+            SimulationResult result = service.simulate(request(1_900_000, true, true, false));
+            assertThat(result.getIncomeTax()).isEqualTo(1_557);
         }
+    }
+
+    @Nested
+    @DisplayName("160万円の壁（本人の所得税）")
+    class IncomeTaxWall {
 
         @ParameterizedTest(name = "年収{0}円 → 壁超過={1}")
         @CsvSource({
-                "1229999, false",
-                "1230000, true",
-                "1500000, true"
+                "1599999, false",
+                "1600000, true",
+                "1800000, true"
         })
-        @DisplayName("123万円の壁の超過判定が境界値で正しい")
+        @DisplayName("160万円の壁の超過判定が境界値で正しい")
         void wallExceededFlag(int income, boolean expected) {
+            SimulationResult result = service.simulate(request(income, true, true, false));
+            assertThat(findWall(result, "160万円").isExceeded()).isEqualTo(expected);
+        }
+    }
+
+    @Nested
+    @DisplayName("特定親族特別控除（19〜22歳・188万円まで段階的）")
+    class SpecificDependentDeduction {
+
+        @ParameterizedTest(name = "子の年収{0}円 → 親の控除{1}円")
+        @CsvSource({
+                "1450000, 630000",  // 〜150万：満額
+                "1500000, 630000",  // 150万ちょうど：満額
+                "1550000, 610000",  // 〜155万
+                "1600000, 510000",  // 〜160万
+                "1650000, 410000",  // 〜165万
+                "1880000, 30000",   // 〜188万
+                "1900000, 0"        // 188万超：消滅
+        })
+        @DisplayName("子の年収に応じて親の控除が段階的に減少する（崖ではなくスロープ）")
+        void deductionDecreasesGradually(int income, int expectedDeduction) {
             SimulationResult result = service.simulate(request(income, true, false, false));
-            assertThat(findWall(result, "123万円").isExceeded()).isEqualTo(expected);
-        }
-    }
-
-    @Nested
-    @DisplayName("特定扶養親族控除の壁（19〜22歳・150万円）")
-    class SpecificDependentWall {
-
-        @Test
-        @DisplayName("年収149万9999円なら扶養内（2025年改正で150万円未満まで拡大）")
-        void justUnder150_isDependent() {
-            // 社会保険の判定を無効化するため親は自営業(false)とする
-            SimulationResult result = service.simulate(request(1_499_999, true, false, false));
-            assertThat(result.isCanBeDependent()).isTrue();
+            assertThat(result.getParentDeduction()).isEqualTo(expectedDeduction);
         }
 
         @Test
-        @DisplayName("年収150万円ちょうどで扶養から外れる")
-        void exactly150_notDependent() {
-            SimulationResult result = service.simulate(request(1_500_000, true, false, false));
-            assertThat(result.isCanBeDependent()).isFalse();
-        }
-
-        @Test
-        @DisplayName("扶養を外れると親は特定扶養控除63万円を失い、追加税負担が約12.6万円発生する")
-        void parentImpact() {
+        @DisplayName("年収160万円では満額63万から51万に減り、親の追加税負担は約2.4万円")
+        void parentImpactAt160() {
             SimulationResult result = service.simulate(request(1_600_000, true, false, false));
-            assertThat(result.getParentLostDeduction()).isEqualTo(630_000);
-            assertThat(result.getParentAdditionalTax()).isEqualTo(126_000); // 630,000 × 20%
+            assertThat(result.getParentMaxDeduction()).isEqualTo(630_000);
+            assertThat(result.getParentDeduction()).isEqualTo(510_000);
+            assertThat(result.getParentLostDeduction()).isEqualTo(120_000);     // 630,000 - 510,000
+            assertThat(result.getParentAdditionalTax()).isEqualTo(24_000);      // 120,000 × 20%
+        }
+
+        @Test
+        @DisplayName("150万円までは親が満額控除を受けられる（追加負担なし）")
+        void noImpactUnder150() {
+            SimulationResult result = service.simulate(request(1_450_000, true, false, false));
+            assertThat(result.getParentLostDeduction()).isZero();
+            assertThat(result.isCanBeDependent()).isTrue();
         }
     }
 
     @Nested
-    @DisplayName("一般扶養控除の壁（103万円・2025年以降も変更なし）")
-    class GeneralDependentWall {
+    @DisplayName("一般扶養控除（19〜22歳以外・123万円の崖）")
+    class GeneralDependentDeduction {
 
         @Test
-        @DisplayName("年収102万9999円なら扶養内")
-        void justUnder103_isDependent() {
-            SimulationResult result = service.simulate(request(1_029_999, false, false, false));
+        @DisplayName("年収123万円以下なら親は38万円の控除を受けられる")
+        void under123_fullDeduction() {
+            SimulationResult result = service.simulate(request(1_230_000, false, false, false));
+            assertThat(result.getParentDeduction()).isEqualTo(380_000);
             assertThat(result.isCanBeDependent()).isTrue();
         }
 
         @Test
-        @DisplayName("年収103万円ちょうどで扶養から外れる")
-        void exactly103_notDependent() {
-            SimulationResult result = service.simulate(request(1_030_000, false, false, false));
-            assertThat(result.isCanBeDependent()).isFalse();
-        }
-
-        @Test
-        @DisplayName("扶養を外れると親は一般扶養控除38万円を失う")
-        void parentImpact() {
-            SimulationResult result = service.simulate(request(1_100_000, false, false, false));
+        @DisplayName("年収123万円を超えると一般扶養控除は消滅する（段階的控除なし）")
+        void over123_noDeduction() {
+            SimulationResult result = service.simulate(request(1_230_001, false, false, false));
+            assertThat(result.getParentDeduction()).isZero();
             assertThat(result.getParentLostDeduction()).isEqualTo(380_000);
-            assertThat(result.getParentAdditionalTax()).isEqualTo(76_000); // 380,000 × 20%
         }
     }
 
@@ -133,9 +143,9 @@ class TaxCalculationServiceTest {
     class SocialInsuranceWall {
 
         @Test
-        @DisplayName("106万円の壁：週20時間以上・51人以上企業の場合、106万円から社会保険料が発生する")
+        @DisplayName("106万円の壁：週20時間以上・51人以上企業では106万円から社会保険料が発生する")
         void wall106_premiumOccurs() {
-            // 1,060,000 × (健康保険5% + 厚生年金9.15%) = 1,060,000 × 14.15% = 149,990
+            // 1,060,000 × (健康保険5% + 厚生年金9.15%) = 149,990
             SimulationResult result = service.simulate(request(1_060_000, true, true, true));
             assertThat(result.getSocialInsurancePremium()).isEqualTo(149_990);
             assertThat(findWall(result, "106万円").isExceeded()).isTrue();
@@ -175,7 +185,7 @@ class TaxCalculationServiceTest {
         @Test
         @DisplayName("手取り = 年収 − 社会保険料 − 所得税 − 住民税 が成立する")
         void takeHomeIsConsistent() {
-            SimulationResult r = service.simulate(request(1_600_000, true, false, true));
+            SimulationResult r = service.simulate(request(1_900_000, true, true, true));
             int expected = r.getAnnualIncome()
                     - r.getSocialInsurancePremium()
                     - r.getIncomeTax()
@@ -185,22 +195,28 @@ class TaxCalculationServiceTest {
     }
 
     @Nested
-    @DisplayName("推奨上限年収")
+    @DisplayName("満額控除の推奨上限年収")
     class RecommendedMax {
 
         @Test
-        @DisplayName("親が会社員の場合、税の壁と社会保険の壁のうち低い方が推奨上限になる")
+        @DisplayName("19〜22歳・親が会社員なら、控除の壁150万と社保の壁130万のうち低い方が推奨上限")
         void specificDependent_employeeParent() {
-            // 税の壁150万 vs 社保の壁130万 → 低い方の130万−1円
             SimulationResult result = service.simulate(request(1_600_000, true, false, true));
             assertThat(result.getRecommendedMaxIncome()).isEqualTo(1_299_999);
         }
 
         @Test
-        @DisplayName("親が自営業の場合、社会保険の被扶養者判定が無いため税の壁が推奨上限になる")
+        @DisplayName("19〜22歳・親が自営業なら、社会保険の被扶養判定が無いため控除の壁150万が推奨上限")
         void specificDependent_selfEmployedParent() {
             SimulationResult result = service.simulate(request(1_600_000, true, false, false));
             assertThat(result.getRecommendedMaxIncome()).isEqualTo(1_499_999);
+        }
+
+        @Test
+        @DisplayName("一般扶養・親が自営業なら123万円が推奨上限")
+        void generalDependent_selfEmployedParent() {
+            SimulationResult result = service.simulate(request(1_300_000, false, false, false));
+            assertThat(result.getRecommendedMaxIncome()).isEqualTo(1_229_999);
         }
     }
 }
