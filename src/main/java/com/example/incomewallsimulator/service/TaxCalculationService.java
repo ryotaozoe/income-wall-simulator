@@ -19,6 +19,8 @@ import java.util.List;
  *   <li>本人の所得税が発生する「壁」: 103万円 → <b>160万円</b>（基礎控除95万＋給与所得控除65万）。</li>
  *   <li>特定親族特別控除の新設（19〜22歳）: 給与収入123万円超でも、<b>188万円までは段階的に</b>
  *       親が控除を受けられる。従来の「150万円で控除が消える崖」ではなくなった。</li>
+ *   <li>社会保険の被扶養者の年収要件（19〜22歳）: 2025年10月から130万円未満 → <b>150万円未満</b>に引き上げ。
+ *       ただし週20時間以上・51人以上企業での加入義務（106万円の壁）は引き続き適用。</li>
  * </ul>
  */
 @Service
@@ -33,6 +35,7 @@ public class TaxCalculationService {
     private static final int WALL_INCOME_TAX = 1_600_000;            // 本人の所得税の壁（基礎控除95万＋給与所得控除65万）
     private static final int WALL_SOCIAL_INSURANCE_SMALL = 1_060_000;// 社会保険の壁（106万・条件該当者）
     private static final int WALL_SOCIAL_INSURANCE_LARGE = 1_300_000;// 社会保険の壁（130万・被扶養者の上限）
+    private static final int WALL_SI_DEPENDENT_STUDENT = 1_500_000;  // 19〜22歳の被扶養者の上限（2025年10月〜・130万→150万に引き上げ）
     private static final int WALL_DEDUCTION_START = 1_230_000;       // 扶養控除→特定親族特別控除の切替点
     private static final int WALL_DEDUCTION_REDUCE = 1_500_000;      // 19〜22歳：親の控除が減り始める点
     private static final int WALL_DEDUCTION_END = 1_880_000;         // 19〜22歳：親の控除が完全に消える点
@@ -57,7 +60,7 @@ public class TaxCalculationService {
         boolean parentIsEmployee = req.getParentIsEmployee();
 
         // --- 本人の税・社会保険料 ---
-        int socialInsurancePremium = calcSocialInsurancePremium(income, isSubjectToSI);
+        int socialInsurancePremium = calcSocialInsurancePremium(income, isSubjectToSI, isSpecific);
         int employmentIncome = income - calcEmploymentIncomeDeduction(income); // 給与所得
         int totalIncome = employmentIncome; // 給与のみ前提なので合計所得＝給与所得
         int basicDeduction = calcBasicDeduction(totalIncome);
@@ -77,7 +80,7 @@ public class TaxCalculationService {
         // 親が満額の控除を受けられ、かつ社会保険の被扶養も維持できているか
         boolean fullDeduction = (parentDeduction == parentMaxDeduction);
         boolean siDependentKept = !parentIsEmployee
-                || income < (isSubjectToSI ? WALL_SOCIAL_INSURANCE_SMALL : WALL_SOCIAL_INSURANCE_LARGE);
+                || income < (isSubjectToSI ? WALL_SOCIAL_INSURANCE_SMALL : socialInsuranceDependentWall(isSpecific));
         boolean canBeDependent = fullDeduction && siDependentKept;
 
         String dependentStatus = buildDependentStatus(income, isSpecific, parentDeduction, parentMaxDeduction);
@@ -130,13 +133,21 @@ public class TaxCalculationService {
         return 480_000;
     }
 
+    /**
+     * 親の健康保険の被扶養者でいられる年収上限。
+     * 19〜22歳（特定扶養）は2025年10月から130万円→150万円に引き上げ。
+     */
+    private int socialInsuranceDependentWall(boolean isSpecific) {
+        return isSpecific ? WALL_SI_DEPENDENT_STUDENT : WALL_SOCIAL_INSURANCE_LARGE;
+    }
+
     /** 社会保険料（本人負担分・概算） */
-    private int calcSocialInsurancePremium(int income, boolean isSubjectToSI) {
+    private int calcSocialInsurancePremium(int income, boolean isSubjectToSI, boolean isSpecific) {
         if (isSubjectToSI && income >= WALL_SOCIAL_INSURANCE_SMALL) {
-            // 厚生年金・健康保険（本人負担分）
+            // 厚生年金・健康保険（本人負担分）。加入義務は被扶養者の年齢区分に関わらず106万円から
             return (int) (income * (HEALTH_INSURANCE_RATE + PENSION_RATE));
-        } else if (!isSubjectToSI && income >= WALL_SOCIAL_INSURANCE_LARGE) {
-            // 国民健康保険・国民年金（概算）
+        } else if (!isSubjectToSI && income >= socialInsuranceDependentWall(isSpecific)) {
+            // 被扶養者の上限を超えたら国民健康保険・国民年金（概算）
             int nationalHealthInsurance = Math.min((int) (income * 0.08), 830_000);
             return nationalHealthInsurance + NATIONAL_PENSION_ANNUAL;
         }
@@ -200,15 +211,20 @@ public class TaxCalculationService {
                     .name("106万円の壁（社会保険）")
                     .threshold(WALL_SOCIAL_INSURANCE_SMALL)
                     .exceeded(income >= WALL_SOCIAL_INSURANCE_SMALL)
-                    .description("週20時間以上・月額賃金8.8万円以上・51人以上企業に該当する場合、社会保険に加入義務が生じます。")
+                    .description("週20時間以上・月額賃金8.8万円以上・51人以上企業に該当する場合、社会保険に加入義務が生じます（年齢区分に関わらず適用）。")
                     .consequence("健康保険・厚生年金の保険料負担が発生（年間約15〜20万円）")
                     .build());
         } else {
+            int siWall = socialInsuranceDependentWall(isSpecific);
+            String name = isSpecific ? "150万円の壁（社会保険・被扶養者）" : "130万円の壁（社会保険）";
+            String desc = isSpecific
+                    ? "親の健康保険の被扶養者でいられる上限。19〜22歳は2025年10月から130万→150万円に引き上げられました。超えると自分で国民健康保険・国民年金に加入が必要です。"
+                    : "親の健康保険の被扶養者でいられる上限。これを超えると自分で国民健康保険・国民年金に加入する必要があります。";
             walls.add(WallStatus.builder()
-                    .name("130万円の壁（社会保険）")
-                    .threshold(WALL_SOCIAL_INSURANCE_LARGE)
-                    .exceeded(income >= WALL_SOCIAL_INSURANCE_LARGE)
-                    .description("親の健康保険の被扶養者でいられる上限。これを超えると自分で国民健康保険・国民年金に加入する必要があります。")
+                    .name(name)
+                    .threshold(siWall)
+                    .exceeded(income >= siWall)
+                    .description(desc)
                     .consequence("国民健康保険・国民年金の保険料負担が発生（年間約20〜30万円）")
                     .build());
         }
@@ -258,7 +274,7 @@ public class TaxCalculationService {
             return deductionWall;
         }
         // 親が会社員なら社会保険の被扶養者の上限も考慮
-        int siWall = (isSubjectToSI ? WALL_SOCIAL_INSURANCE_SMALL : WALL_SOCIAL_INSURANCE_LARGE) - 1;
+        int siWall = (isSubjectToSI ? WALL_SOCIAL_INSURANCE_SMALL : socialInsuranceDependentWall(isSpecific)) - 1;
         return Math.min(deductionWall, siWall);
     }
 
@@ -286,8 +302,8 @@ public class TaxCalculationService {
         String wallName;
         if (isSubjectToSI && income >= WALL_SOCIAL_INSURANCE_SMALL) {
             wallName = "106万円の壁（社会保険）";
-        } else if (!isSubjectToSI && income >= WALL_SOCIAL_INSURANCE_LARGE) {
-            wallName = "130万円の壁（社会保険）";
+        } else if (!isSubjectToSI && income >= socialInsuranceDependentWall(isSpecific)) {
+            wallName = isSpecific ? "150万円の壁（社会保険・被扶養者）" : "130万円の壁（社会保険）";
         } else if (isSpecific) {
             wallName = "188万円の壁（特定親族特別控除の消滅）";
         } else {

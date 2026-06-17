@@ -159,12 +159,40 @@ class TaxCalculationServiceTest {
         }
 
         @Test
-        @DisplayName("130万円の壁：中小企業等では130万円から国民健康保険・国民年金の負担が発生する")
+        @DisplayName("130万円の壁：19〜22歳以外は130万円から国民健康保険・国民年金の負担が発生する")
         void wall130_premiumOccurs() {
             // 国保: min(1,300,000 × 8%, 830,000) = 104,000 ＋ 国民年金: 203,760 = 307,760
             SimulationResult result = service.simulate(request(1_300_000, false, false, true));
             assertThat(result.getSocialInsurancePremium()).isEqualTo(307_760);
             assertThat(findWall(result, "130万円").isExceeded()).isTrue();
+        }
+
+        @Test
+        @DisplayName("19〜22歳の被扶養者の壁は2025年10月から150万円に引き上げ：140万円では社会保険料が発生しない")
+        void student_dependentWallRaisedTo150_noPremiumAt140() {
+            // 19〜22歳(isSpecific=true)・適用拡大対象外(isSubjectToSI=false)
+            // 140万 < 150万 なので被扶養を維持でき、社会保険料は0
+            SimulationResult result = service.simulate(request(1_400_000, true, false, true));
+            assertThat(result.getSocialInsurancePremium()).isZero();
+            assertThat(findWall(result, "150万円の壁（社会保険").isExceeded()).isFalse();
+        }
+
+        @Test
+        @DisplayName("19〜22歳でも150万円に達すると被扶養を外れ社会保険料が発生する")
+        void student_premiumOccursAt150() {
+            // 国保: min(1,500,000 × 8%, 830,000) = 120,000 ＋ 国民年金: 203,760 = 323,760
+            SimulationResult result = service.simulate(request(1_500_000, true, false, true));
+            assertThat(result.getSocialInsurancePremium()).isEqualTo(323_760);
+            assertThat(findWall(result, "150万円の壁（社会保険").isExceeded()).isTrue();
+        }
+
+        @Test
+        @DisplayName("19〜22歳でも適用拡大の対象（106万の壁）は残る：社会保険料が発生する")
+        void student_wall106StillApplies() {
+            // isSpecific=true でも isSubjectToSI=true なら106万から加入義務
+            SimulationResult result = service.simulate(request(1_060_000, true, true, true));
+            assertThat(result.getSocialInsurancePremium()).isEqualTo(149_990);
+            assertThat(findWall(result, "106万円").isExceeded()).isTrue();
         }
     }
 
@@ -199,10 +227,11 @@ class TaxCalculationServiceTest {
     class RecommendedMax {
 
         @Test
-        @DisplayName("19〜22歳・親が会社員なら、控除の壁150万と社保の壁130万のうち低い方が推奨上限")
+        @DisplayName("19〜22歳・親が会社員なら、税の壁150万と社保の壁150万（2025年10月引き上げ後）が一致し150万が推奨上限")
         void specificDependent_employeeParent() {
+            // 社保の被扶養上限が130万→150万に上がったため、税の壁150万と揃う
             SimulationResult result = service.simulate(request(1_600_000, true, false, true));
-            assertThat(result.getRecommendedMaxIncome()).isEqualTo(1_299_999);
+            assertThat(result.getRecommendedMaxIncome()).isEqualTo(1_499_999);
         }
 
         @Test
