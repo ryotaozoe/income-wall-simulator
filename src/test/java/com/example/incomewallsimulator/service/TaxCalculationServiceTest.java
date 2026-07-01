@@ -193,12 +193,34 @@ class TaxCalculationServiceTest {
         }
 
         @Test
-        @DisplayName("19〜22歳でも適用拡大の対象（106万の壁）は残る：社会保険料が発生する")
-        void student_wall106StillApplies() {
-            // isSpecific=true でも isSubjectToSI=true なら106万から加入義務
-            SimulationResult result = service.simulate(request(1_060_000, true, true, true));
+        @DisplayName("19〜22歳でも（学生でなければ）適用拡大の対象（106万の壁）は残る：社会保険料が発生する")
+        void nonStudent_wall106StillApplies() {
+            // isSpecific=true でも 学生でなく isSubjectToSI=true なら106万から加入義務
+            SimulationResult result = service.simulate(request(1_060_000, true, true, true, false));
             assertThat(result.getSocialInsurancePremium()).isEqualTo(149_990);
             assertThat(findWall(result, "106万円").isExceeded()).isTrue();
+        }
+
+        @Test
+        @DisplayName("昼間学生は106万円の壁（被用者保険の適用拡大）の対象外：106万でも社会保険料は発生しない")
+        void student_excludedFromWall106() {
+            // 学生(isStudent=true)は適用拡大の対象外。isSubjectToSI=true を選んでも106万では加入しない
+            SimulationResult result = service.simulate(request(1_060_000, true, true, true, true));
+            assertThat(result.getSocialInsurancePremium()).isZero();
+            // 106万の壁は表示されず、被扶養者の壁（19〜22歳=150万）が基準になる
+            boolean hasWall106 = result.getWallStatuses().stream()
+                    .anyMatch(w -> w.getName().contains("106万円"));
+            assertThat(hasWall106).isFalse();
+            assertThat(findWall(result, "150万円の壁（社会保険").isExceeded()).isFalse();
+        }
+
+        @Test
+        @DisplayName("学生が適用拡大企業を選んでも、被扶養者の壁（150万）を超えれば国保・国民年金が発生する")
+        void student_fallsBackToDependentWall() {
+            // 学生・isSubjectToSI=true でも 150万到達で被扶養を外れ国保・国民年金
+            SimulationResult result = service.simulate(request(1_500_000, true, true, true, true));
+            assertThat(result.getSocialInsurancePremium()).isEqualTo(323_760);
+            assertThat(findWall(result, "150万円の壁（社会保険").isExceeded()).isTrue();
         }
     }
 
@@ -217,9 +239,10 @@ class TaxCalculationServiceTest {
         @DisplayName("学生以外は110万円超で均等割＋所得割が発生する")
         void nonStudent_over110() {
             // 合計所得 = 1,200,000 - 650,000 = 550,000
-            // 所得割 = (550,000 - 430,000) × 10% = 12,000 ＋ 均等割 5,000 = 17,000
+            // 所得割 = (550,000 - 430,000) × 10% = 12,000 − 調整控除 2,500（50,000×5%）= 9,500
+            //        ＋ 均等割 5,000 = 14,500
             SimulationResult result = service.simulate(request(1_200_000, false, false, false, false));
-            assertThat(result.getResidentTax()).isEqualTo(17_000);
+            assertThat(result.getResidentTax()).isEqualTo(14_500);
         }
 
         @Test
@@ -236,9 +259,10 @@ class TaxCalculationServiceTest {
             SimulationResult at134 = service.simulate(request(1_340_000, true, false, false, true));
             assertThat(at134.getResidentTax()).isEqualTo(5_000); // 均等割のみ
 
-            // 1,350,000: 合計所得700,000、課税所得 = 700,000-430,000-260,000 = 10,000 → 所得割1,000
+            // 1,350,000: 合計所得700,000、課税所得 = 700,000-430,000-260,000 = 10,000
+            // 所得割 = 1,000 − 調整控除 500（min(60,000,10,000)×5%）= 500
             SimulationResult over134 = service.simulate(request(1_350_000, true, false, false, true));
-            assertThat(over134.getResidentTax()).isEqualTo(6_000); // 均等割5,000＋所得割1,000
+            assertThat(over134.getResidentTax()).isEqualTo(5_500); // 均等割5,000＋所得割500
             assertThat(findWall(over134, "134万円").isExceeded()).isTrue();
         }
 
